@@ -1,0 +1,11 @@
+{
+  "name": "mail-digest-ui-tests",
+  "private": true,
+  "scripts": {
+    "test:ui": "playwright test",
+    "screenshot": "playwright test e2e/dashboard.spec.js --project=chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

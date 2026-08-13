@@ -1,0 +1,31 @@
+# Server and schedule
+MAILDIGEST_ROOT=/home/epalk/projects/mail-digest
+MAILDIGEST_HOST=127.0.0.1
+MAILDIGEST_PORT=8765
+MAILDIGEST_DATABASE=/home/epalk/.local/state/mail-digest/maildigest.sqlite3
+MAILDIGEST_TIMEZONE=Europe/Brussels
+MAILDIGEST_RUN_HOUR=5
+MAILDIGEST_RUN_MINUTE=0
+MAILDIGEST_RETRY_MINUTES=30
+
+# Proton Mail Bridge credentials. Use the generated Bridge password, not your Proton password.
+MAILDIGEST_IMAP_HOST=127.0.0.1
+MAILDIGEST_IMAP_PORT=1143
+MAILDIGEST_IMAP_USERNAME=replace-with-bridge-username
+MAILDIGEST_IMAP_PASSWORD=replace-with-bridge-password
+MAILDIGEST_IMAP_MAILBOX="Folders/TLDR Dev"
+MAILDIGEST_IMAP_SECURITY=starttls
+# Bridge uses a local certificate by default. Never disable verification for a remote host.
+MAILDIGEST_IMAP_VERIFY_TLS=false
+
+# Local model
+MAILDIGEST_OLLAMA_URL=http://127.0.0.1:11434
+MAILDIGEST_OLLAMA_MODEL=qwen3:4b
+MAILDIGEST_OLLAMA_COMMAND=ollama serve
+MAILDIGEST_OLLAMA_START_TIMEOUT=180
+MAILDIGEST_LLM_TIMEOUT=600
+
+# Resource and context limits
+MAILDIGEST_MAX_EMAILS=200
+MAILDIGEST_MAX_BODY_CHARS=12000
+MAILDIGEST_MAX_DIGEST_CHARS=24000

@@ -1,0 +1,23 @@
+[Unit]
+Description=Private local email digest dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/epalk/projects/mail-digest
+Environment=PYTHONPATH=/home/epalk/projects/mail-digest/src
+EnvironmentFile=/home/epalk/.config/mail-digest.env
+ExecStart=/usr/bin/python3 -m maildigest serve
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=mail-digest
+ReadWritePaths=-/home/epalk/.ollama
+
+[Install]
+WantedBy=default.target
