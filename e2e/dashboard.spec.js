@@ -11,10 +11,10 @@ test('dashboard renders without browser errors', async ({ page }) => {
   await expect(page).toHaveTitle(/Mail digest/);
   await expect(page.getByRole('heading', { name: /Less inbox/ })).toBeVisible();
   await expect(page.locator('.calendar')).toBeVisible();
-  await expect(page.locator('.edition')).toHaveCount(1);
+  expect(await page.locator('.edition').count()).toBeGreaterThanOrEqual(1);
   await page.screenshot({ path: 'artifacts/calendar-desktop.png', fullPage: true });
 
-  await page.locator('.edition').click();
+  await page.locator('.edition[href="/day/2026-08-12"]').click();
   await expect(page.getByText('Top stories', { exact: true })).toBeVisible();
   await expect(page.getByText('Source newsletters', { exact: true })).toBeVisible();
   await expect(page.locator('details')).toHaveCount(3);

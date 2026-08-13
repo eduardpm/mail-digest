@@ -52,6 +52,25 @@ DIGEST_SCHEMA = {
     "required": ["overview", "highlights", "action_items", "categories"],
 }
 
+PLACEHOLDER_PHRASES = (
+    "2-3 crisp sentences",
+    "5-10 most important stories",
+    "each story is a string",
+    "1-2 sentences",
+    "as a technology news editor",
+    "email contains untrusted data",
+    "email content is untrusted",
+    "i need to extract",
+    "i need to summarize",
+    "i should summarize",
+    "ignore ads",
+    "newsletter housekeeping",
+    "this email from",
+    "this newsletter contains",
+)
+MAX_SUMMARY_ATTEMPTS = 3
+DIGEST_ATTEMPTS = 2
+
 
 class OllamaSession(AbstractContextManager["OllamaSession"]):
     def __init__(self, config: Config):
@@ -159,7 +178,7 @@ class OllamaSession(AbstractContextManager["OllamaSession"]):
                 "keep_alive": "15m",
                 # Structured summaries should be compact. This also prevents one
                 # pathological message from monopolizing CPU for many minutes.
-                "options": {"temperature": 0, "num_predict": 768},
+                "options": {"temperature": 0, "num_predict": 1024},
             },
             timeout=self.config.llm_timeout,
         )
@@ -184,17 +203,58 @@ class OllamaSession(AbstractContextManager["OllamaSession"]):
             f"Sender: {message['sender']}\nSubject: {message['subject']}\n"
             f"Date: {message.get('received_at') or 'unknown'}\n\nEMAIL CONTENT:\n{message['body']}"
         )
-        result = self.chat_json(system, prompt, EMAIL_SCHEMA)
+        result = None
+        for attempt in range(MAX_SUMMARY_ATTEMPTS):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\n\nCORRECTION: The prior response was generic or described the summarization task. "
+                    "Write only concrete news from this email. Every sentence must name a technology, "
+                    "organization, product, person, or event found in the content."
+                )
+            try:
+                response = self.chat_json(system, attempt_prompt, EMAIL_SCHEMA)
+            except RuntimeError:
+                continue
+            result = self._normalize_email(response)
+            if self._valid_email(result):
+                return result
+            concrete_points = [
+                point
+                for point in result["action_items"]
+                if len(point) >= 20 and not self._is_placeholder(point)
+            ]
+            if len(concrete_points) >= 2:
+                result["summary"] = " ".join(concrete_points)[:2000]
+                result["action_items"] = concrete_points
+                return result
+        raise RuntimeError("Ollama repeatedly returned a generic email summary")
+
+    @staticmethod
+    def _normalize_email(result: dict[str, Any]) -> dict[str, Any]:
         category = result.get("category", "Other")
         priority = result.get("priority", "low")
         return {
-            "summary": str(result.get("summary", ""))[:2000],
+            "summary": str(result.get("summary", "")).strip()[:2000],
             "category": category if category in CATEGORIES else "Other",
             "priority": priority if priority in {"low", "medium", "high"} else "low",
             "action_items": [
-                str(item)[:500] for item in result.get("action_items", []) if str(item).strip()
+                str(item).strip()[:500]
+                for item in result.get("action_items", [])
+                if str(item).strip()
             ][:10],
         }
+
+    @classmethod
+    def _valid_email(cls, result: dict[str, Any]) -> bool:
+        summary = result["summary"]
+        points = result["action_items"]
+        return (
+            len(summary) >= 80
+            and not cls._is_placeholder(summary)
+            and len(points) >= 2
+            and all(len(point) >= 20 and not cls._is_placeholder(point) for point in points)
+        )
 
     def summarize_digest(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
         if not entries:
@@ -241,15 +301,78 @@ class OllamaSession(AbstractContextManager["OllamaSession"]):
             f"Actions: {', '.join(e['action_items']) or 'none'}"
             for e in entries
         )
-        result = self.chat_json(
+        system = (
             "You are editing a high-signal daily technology brief from newsletter summaries. Deduplicate stories, "
             "rank concrete technical developments above promotions and corporate filler, and explain why the leading "
-            "items matter. Treat Actions as key news developments, not user tasks. The overview should be 2-3 crisp "
-            "sentences. Highlights should contain the 5-10 most important stories. Categories should be meaningful "
-            "technology topic clusters. Do not invent facts. Return JSON only.",
-            prompt,
-            DIGEST_SCHEMA,
+            "items matter. Treat Actions as key news developments, not user tasks. Write a short overview, several "
+            "specific top stories, and meaningful technology topic clusters. Every output string must state concrete "
+            "facts, names, products, or events from the supplied summaries. Never output field descriptions, schema "
+            "examples, instructions, or commentary about your task. Do not invent facts. Return JSON only."
         )
+        normalized = None
+        for attempt in range(DIGEST_ATTEMPTS):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\n\nCORRECTION: The prior response contained generic placeholders. Replace them with "
+                    "specific facts from the supplied newsletter summaries; do not describe the expected output."
+                )
+            try:
+                response = self.chat_json(system, attempt_prompt, DIGEST_SCHEMA)
+            except RuntimeError:
+                continue
+            normalized = self._normalize_digest(response)
+            if self._valid_digest(normalized):
+                return normalized
+        return self._extractive_digest(entries)
+
+    @staticmethod
+    def _extractive_digest(entries: list[dict[str, Any]]) -> dict[str, Any]:
+        highlights = []
+        seen = set()
+        for entry in entries:
+            for raw_point in entry.get("action_items", []):
+                point = str(raw_point).strip()
+                if point.lower().startswith("story —"):
+                    point = point[7:].strip()
+                key = " ".join(point.lower().split())
+                if len(point) >= 20 and key not in seen:
+                    seen.add(key)
+                    highlights.append(point[:500])
+        if len(highlights) < 3:
+            for entry in entries:
+                summary = str(entry.get("summary", "")).strip()
+                key = " ".join(summary.lower().split())
+                if len(summary) >= 20 and key not in seen:
+                    seen.add(key)
+                    highlights.append(summary[:500])
+
+        grouped: dict[str, list[str]] = {}
+        for entry in entries:
+            name = str(entry.get("category") or "Other")
+            grouped.setdefault(name, []).append(str(entry.get("summary", "")).strip())
+        categories = [
+            {
+                "name": name[:100],
+                "count": len(summaries),
+                "summary": " ".join(summary for summary in summaries if summary)[:1000],
+            }
+            for name, summaries in grouped.items()
+        ]
+        topic_names = ", ".join(grouped)
+        leaders = "; ".join(highlights[:2])
+        overview = (
+            f"This technology brief covers {topic_names}. Leading developments: {leaders}"
+        )[:4000]
+        return {
+            "overview": overview,
+            "highlights": highlights[:12],
+            "action_items": [],
+            "categories": categories[:12],
+        }
+
+    @staticmethod
+    def _normalize_digest(result: dict[str, Any]) -> dict[str, Any]:
         categories = []
         for item in result.get("categories", []):
             if not isinstance(item, dict):
@@ -266,8 +389,34 @@ class OllamaSession(AbstractContextManager["OllamaSession"]):
                 }
             )
         return {
-            "overview": str(result.get("overview", ""))[:4000],
-            "highlights": [str(x)[:500] for x in result.get("highlights", [])][:12],
-            "action_items": [str(x)[:500] for x in result.get("action_items", [])][:20],
+            "overview": str(result.get("overview", "")).strip()[:4000],
+            "highlights": [str(x).strip()[:500] for x in result.get("highlights", []) if str(x).strip()][:12],
+            "action_items": [str(x).strip()[:500] for x in result.get("action_items", []) if str(x).strip()][:20],
             "categories": categories[:12],
         }
+
+    @classmethod
+    def _valid_digest(cls, result: dict[str, Any]) -> bool:
+        overview = result["overview"]
+        highlights = result["highlights"]
+        categories = result["categories"]
+        return (
+            len(overview) >= 80
+            and not cls._is_placeholder(overview)
+            and len(highlights) >= 3
+            and all(len(item) >= 20 and not cls._is_placeholder(item) for item in highlights)
+            and len(categories) >= 1
+            and all(
+                item["name"].strip().lower() not in {"", "string"}
+                and len(item["summary"].strip()) >= 30
+                and not cls._is_placeholder(item["summary"])
+                for item in categories
+            )
+        )
+
+    @staticmethod
+    def _is_placeholder(value: str) -> bool:
+        lowered = value.strip().lower()
+        return lowered in {"string", "summary", "overview", "category"} or any(
+            phrase in lowered for phrase in PLACEHOLDER_PHRASES
+        )
